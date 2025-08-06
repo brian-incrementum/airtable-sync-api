@@ -1,7 +1,8 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from sync import run_sync
 import os
 from dotenv import load_dotenv
+from typing import Optional
 
 load_dotenv()
 
@@ -17,13 +18,17 @@ async def root():
     return {"message": "Airtable HR Sync API is running"}
 
 @app.get("/cron")
-async def cron():
-    """Endpoint for automated hourly sync runs."""
+async def cron(sync_mode: Optional[str] = Query(default="incremental", regex="^(full|incremental)$")):
+    """Endpoint for automated hourly sync runs.
+    
+    Args:
+        sync_mode: 'full' or 'incremental' (default: incremental)
+    """
     try:
-        result = await run_sync()
+        result = await run_sync(sync_mode=sync_mode)
         return {
             "status": "success",
-            "message": "Sync completed successfully",
+            "message": f"Sync completed successfully (mode: {sync_mode})",
             "rows": result
         }
     except Exception as e:
@@ -33,8 +38,15 @@ async def cron():
         )
 
 @app.post("/sync")
-async def manual_sync(request: Request):
-    """Manual sync endpoint with authentication via x-sync-key header."""
+async def manual_sync(
+    request: Request,
+    sync_mode: Optional[str] = Query(default="incremental", regex="^(full|incremental)$")
+):
+    """Manual sync endpoint with authentication via x-sync-key header.
+    
+    Args:
+        sync_mode: 'full' or 'incremental' (default: incremental)
+    """
     # Check authentication
     sync_key = request.headers.get("x-sync-key")
     expected_key = os.getenv("SYNC_KEY")
@@ -52,10 +64,10 @@ async def manual_sync(request: Request):
         )
     
     try:
-        result = await run_sync()
+        result = await run_sync(sync_mode=sync_mode)
         return {
             "status": "success", 
-            "message": "Manual sync completed successfully",
+            "message": f"Manual sync completed successfully (mode: {sync_mode})",
             "rows": result
         }
     except Exception as e:

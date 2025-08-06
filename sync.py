@@ -28,13 +28,35 @@ supabase: Client = create_client(
     options=ClientOptions(schema="hr")
 )
 
-def get_airtable_records(table_id: str, view: str = None) -> List[Dict[str, Any]]:
-    """Fetch all records from an Airtable table with pagination."""
+def get_last_sync_timestamp() -> str:
+    """Retrieve the last sync timestamp from system_kv table."""
+    try:
+        result = supabase.table("system_kv").select("value").eq("key", "last_sync_hr").single().execute()
+        if result.data:
+            return result.data.get("value")
+    except Exception as e:
+        print(f"No previous sync timestamp found: {e}")
+    return None
+
+def get_airtable_records(table_id: str, view: str = None, modified_since: str = None, table_name: str = None) -> List[Dict[str, Any]]:
+    """Fetch records from an Airtable table with pagination and optional filtering.
+    
+    Args:
+        table_id: The Airtable table ID
+        view: Optional view name to use
+        modified_since: Optional ISO timestamp to filter records modified after this time
+        table_name: Optional table name for determining if Last Modified field exists
+    """
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{table_id}"
     headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
     params = {}
     if view:
         params["view"] = view
+    
+    # Only apply modified filter for team_members table which has Last Modified field
+    if modified_since and table_name == "team_members":
+        params["filterByFormula"] = f"{{Last Modified}} >= '{modified_since}'"
+        print(f"  Filtering {table_name} for records modified since {modified_since}")
     
     all_records = []
     offset = None
@@ -52,7 +74,10 @@ def get_airtable_records(table_id: str, view: str = None) -> List[Dict[str, Any]
         offset = data.get("offset")
         if not offset:
             break
-            
+    
+    if modified_since and table_name == "team_members":
+        print(f"  Found {len(all_records)} modified records in {table_name}")
+    
     return all_records
 
 def map_department_record(airtable_record: Dict[str, Any]) -> Dict[str, Any]:
@@ -124,12 +149,20 @@ def map_team_member_record(
         "active_lastpass": fields.get("Active Lastpass")
     }
 
-def sync_departments() -> int:
-    """Sync department records from Airtable to Supabase."""
+def sync_departments(modified_since: str = None) -> int:
+    """Sync department records from Airtable to Supabase.
+    
+    Args:
+        modified_since: Optional ISO timestamp to filter modified records
+    """
     print("Syncing departments...")
     
     # Fetch records from Airtable
-    airtable_records = get_airtable_records(AIRTABLE_TABLES["departments"])
+    airtable_records = get_airtable_records(
+        AIRTABLE_TABLES["departments"],
+        modified_since=modified_since,
+        table_name="departments"
+    )
     
     # Map records to Supabase format
     supabase_records = [map_department_record(record) for record in airtable_records]
@@ -146,8 +179,12 @@ def sync_departments() -> int:
     
     return 0
 
-def sync_positions() -> int:
-    """Sync position records from Airtable to Supabase."""
+def sync_positions(modified_since: str = None) -> int:
+    """Sync position records from Airtable to Supabase.
+    
+    Args:
+        modified_since: Optional ISO timestamp to filter modified records
+    """
     print("Syncing positions...")
     
     # First, get department mapping (Airtable ID -> Supabase UUID)
@@ -155,7 +192,11 @@ def sync_positions() -> int:
     department_mapping = {dept["airtable_id"]: dept["id"] for dept in dept_response.data}
     
     # Fetch records from Airtable
-    airtable_records = get_airtable_records(AIRTABLE_TABLES["positions"])
+    airtable_records = get_airtable_records(
+        AIRTABLE_TABLES["positions"],
+        modified_since=modified_since,
+        table_name="positions"
+    )
     
     # Map records to Supabase format
     supabase_records = [
@@ -175,8 +216,12 @@ def sync_positions() -> int:
     
     return 0
 
-def sync_team_members() -> int:
-    """Sync team member records from Airtable to Supabase."""
+def sync_team_members(modified_since: str = None) -> int:
+    """Sync team member records from Airtable to Supabase.
+    
+    Args:
+        modified_since: Optional ISO timestamp to filter modified records
+    """
     print("Syncing team members...")
     
     # Get mapping dictionaries (Airtable ID -> Supabase UUID)
@@ -188,7 +233,11 @@ def sync_team_members() -> int:
     
     # For team members, we need to do a two-pass sync since managers reference other team members
     # First pass: sync basic info without manager relationships
-    airtable_records = get_airtable_records(AIRTABLE_TABLES["team_members"])
+    airtable_records = get_airtable_records(
+        AIRTABLE_TABLES["team_members"],
+        modified_since=modified_since,
+        table_name="team_members"
+    )
     
     # Create initial team member mapping from existing records
     existing_tm_response = supabase.table("team_members").select("id, airtable_id").execute()
@@ -238,30 +287,82 @@ def update_last_sync_timestamp():
     
     print(f"Updated last sync timestamp: {timestamp}")
 
-async def run_sync() -> Dict[str, int]:
-    """Run the complete sync process in order: departments -> positions -> team_members."""
-    print("Starting Airtable sync process...")
+async def run_sync(sync_mode: str = "incremental") -> Dict[str, int]:
+    """Run the complete sync process in order: departments -> positions -> team_members.
+    
+    Args:
+        sync_mode: Either 'full' for complete sync or 'incremental' for modified records only
+    """
+    print(f"Starting Airtable sync process (mode: {sync_mode})...")
+    
+    # Validate sync mode
+    if sync_mode not in ["full", "incremental"]:
+        print(f"Invalid sync mode '{sync_mode}', defaulting to 'incremental'")
+        sync_mode = "incremental"
+    
+    # Get last sync timestamp for incremental mode
+    modified_since = None
+    original_sync_mode = sync_mode
+    
+    if sync_mode == "incremental":
+        modified_since = get_last_sync_timestamp()
+        if modified_since:
+            print(f"Running incremental sync for changes since {modified_since}")
+        else:
+            print("No previous sync found, running full sync")
+            sync_mode = "full"
     
     try:
-        # Sync in dependency order
-        dept_count = sync_departments()
-        pos_count = sync_positions()
-        member_count = sync_team_members()
+        # For incremental sync, we need to sync all tables because:
+        # 1. Departments/positions might affect team_members relationships
+        # 2. We can't easily track dependencies across tables
+        # However, only team_members has Last Modified field for filtering
         
-        # Update sync timestamp
+        if sync_mode == "full":
+            # Full sync - fetch all records
+            dept_count = sync_departments()
+            pos_count = sync_positions()
+            member_count = sync_team_members()
+        else:
+            # Incremental sync - still need to sync all tables for relationships
+            # But only team_members will actually filter by modified date
+            try:
+                dept_count = sync_departments()  # Always full for departments
+                pos_count = sync_positions()     # Always full for positions
+                member_count = sync_team_members(modified_since)  # Filtered for team_members
+            except Exception as e:
+                # If incremental sync fails, fall back to full sync
+                print(f"Incremental sync failed: {str(e)}")
+                print("Falling back to full sync...")
+                dept_count = sync_departments()
+                pos_count = sync_positions()
+                member_count = sync_team_members()
+                sync_mode = "full"  # Update mode to reflect what actually happened
+        
+        # Update sync timestamp only on successful sync
         update_last_sync_timestamp()
         
         result = {
             "departments": dept_count,
             "positions": pos_count,
-            "team_members": member_count
+            "team_members": member_count,
+            "sync_mode": sync_mode,
+            "requested_mode": original_sync_mode
         }
+        
+        if sync_mode != original_sync_mode:
+            result["fallback_reason"] = "Incremental sync failed or no previous sync found"
         
         print(f"Sync completed successfully: {result}")
         return result
         
     except Exception as e:
-        print(f"Sync failed: {str(e)}")
+        error_msg = f"Sync failed: {str(e)}"
+        print(error_msg)
+        # On failure, don't update timestamp so next sync can retry
+        # Log additional context for debugging
+        import traceback
+        print(f"Error traceback: {traceback.format_exc()}")
         raise e
 
 if __name__ == "__main__":
