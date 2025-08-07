@@ -192,7 +192,6 @@ def map_account_service_detail_record(
     
     return {
         "airtable_id": airtable_record["id"],
-        "record_id": fields.get("Record ID", ""),
         "account_id": account_id,
         "service_id": service_id,
         "account_manager_id": account_manager_id,
@@ -226,7 +225,6 @@ def map_contract_record(airtable_record: Dict[str, Any]) -> Dict[str, Any]:
     
     return {
         "airtable_id": airtable_record["id"],
-        "record_id": fields.get("Record ID", ""),
         "agreement_date": agreement_date,
         "agreement_title": fields.get("Agreement Title", ""),
         "link_to_google_drive": fields.get("Link to Google Drive", "")
@@ -276,7 +274,6 @@ def map_client_meeting_record(
     
     return {
         "airtable_id": airtable_record["id"],
-        "record_id": fields.get("Record ID", ""),
         "submitter": fields.get("Submitter", [""])[0] if fields.get("Submitter") else "",
         "account_id": account_id,
         "meeting_date": meeting_date,
@@ -290,7 +287,6 @@ def map_client_meeting_record(
         "risk_explained": fields.get("Risk Explained", ""),
         "predicted_intentions": fields.get("Predicted Intentions", ""),
         "share_link": fields.get("Share Link", ""),
-        "services_text": fields.get("Services_Text", ""),
         "last_modified": last_modified
     }
 

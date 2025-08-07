@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is an Airtable to Supabase sync API that synchronizes HR data from three Airtable tables (departments, positions, team_members) to a Supabase database. The sync supports both full and incremental modes, with intelligent change detection based on last modified timestamps.
 
+## Supabase Project
+
+**Project ID:** `xyihdxjlbtifnjimaehl` (id-internal-portal)
+- Use this project ID when working with Supabase MCP tools
+- Project URL: https://xyihdxjlbtifnjimaehl.supabase.co
+
 ## Development Setup
 
 ### Prerequisites
