@@ -253,7 +253,8 @@ def map_console_login_email_record(
 
 def map_client_meeting_record(
     airtable_record: Dict[str, Any],
-    account_mapping: Dict[str, str]
+    account_mapping: Dict[str, str],
+    team_member_mapping: Dict[str, str] = None
 ) -> Dict[str, Any]:
     """Map Airtable client meeting record to Supabase format."""
     fields = airtable_record.get("fields", {})
@@ -263,6 +264,14 @@ def map_client_meeting_record(
     account_refs = fields.get("Accounts", [])
     if account_refs and len(account_refs) > 0:
         account_id = account_mapping.get(account_refs[0])
+    
+    # Map submitter reference
+    submitter_id = None
+    submitter_refs = fields.get("Submitter", [])
+    if submitter_refs and len(submitter_refs) > 0:
+        submitter_airtable_id = submitter_refs[0]
+        if team_member_mapping:
+            submitter_id = team_member_mapping.get(submitter_airtable_id)
     
     # Parse dates
     meeting_date = fields.get("Meeting Date")
@@ -274,7 +283,8 @@ def map_client_meeting_record(
     
     return {
         "airtable_id": airtable_record["id"],
-        "submitter": fields.get("Submitter", [""])[0] if fields.get("Submitter") else "",
+        "submitter": fields.get("Submitter", [""])[0] if fields.get("Submitter") else "",  # Keeps the Airtable record ID
+        "submitter_id": submitter_id,  # UUID reference to hr.team_members
         "account_id": account_id,
         "meeting_date": meeting_date,
         "meeting_type": fields.get("Meeting Type", ""),
@@ -555,7 +565,7 @@ def run_client_sync(sync_mode: str = "incremental") -> Dict[str, int]:
         
         for record in meetings:
             fields = record.get("fields", {})
-            mapped = map_client_meeting_record(record, account_mapping)
+            mapped = map_client_meeting_record(record, account_mapping, team_member_mapping)
             
             # Upsert the main record
             result = supabase.table("client_meetings").upsert(mapped, on_conflict="airtable_id").execute()
