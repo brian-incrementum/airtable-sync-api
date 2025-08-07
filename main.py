@@ -18,15 +18,15 @@ async def root():
     """Health check endpoint."""
     return {"message": "Airtable Sync API is running"}
 
-@app.get("/cron")
-async def cron(sync_mode: Optional[str] = Query(default="incremental", regex="^(full|incremental)$")):
+@app.get("/hr/cron")
+async def hr_cron(sync_mode: Optional[str] = Query(default="incremental", regex="^(full|incremental)$")):
     """Endpoint for automated hourly HR sync runs.
     
     Args:
         sync_mode: 'full' or 'incremental' (default: incremental)
     """
     try:
-        result = await run_sync(sync_mode=sync_mode)
+        result = run_sync(sync_mode=sync_mode)
         return {
             "status": "success",
             "message": f"HR sync completed successfully (mode: {sync_mode})",
@@ -38,8 +38,8 @@ async def cron(sync_mode: Optional[str] = Query(default="incremental", regex="^(
             detail=f"HR sync failed: {str(e)}"
         )
 
-@app.post("/sync")
-async def manual_sync(
+@app.post("/hr/sync")
+async def manual_hr_sync(
     request: Request,
     sync_mode: Optional[str] = Query(default="incremental", regex="^(full|incremental)$")
 ):
@@ -65,7 +65,7 @@ async def manual_sync(
         )
     
     try:
-        result = await run_sync(sync_mode=sync_mode)
+        result = run_sync(sync_mode=sync_mode)
         return {
             "status": "success", 
             "message": f"Manual HR sync completed successfully (mode: {sync_mode})",

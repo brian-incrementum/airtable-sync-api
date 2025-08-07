@@ -105,6 +105,77 @@ def map_position_record(airtable_record: Dict[str, Any], department_mapping: Dic
         "department_id": department_id
     }
 
+def upload_photo_to_supabase(photo_data: Dict[str, Any], airtable_id: str) -> Dict[str, Any]:
+    """Download photo from Airtable and upload to Supabase Storage.
+    
+    Args:
+        photo_data: Airtable photo attachment data
+        airtable_id: The Airtable record ID for organizing photos
+        
+    Returns:
+        Dict with Supabase Storage URL or None if upload fails
+    """
+    try:
+        if not photo_data or not isinstance(photo_data, list) or len(photo_data) == 0:
+            return None
+            
+        # Get the first photo
+        photo = photo_data[0]
+        photo_url = photo.get("url")
+        filename = photo.get("filename", "photo.jpg")
+        
+        if not photo_url:
+            return None
+            
+        # Check if photo already exists in Supabase
+        storage_path = f"{airtable_id}/{filename}"
+        
+        # Try to get existing file
+        try:
+            existing = supabase.storage.from_("team-photos").list(airtable_id)
+            if existing and any(f['name'] == filename for f in existing):
+                # Photo already exists, return the URL
+                public_url = supabase.storage.from_("team-photos").get_public_url(storage_path)
+                print(f"  Photo already exists for {airtable_id}")
+                return {
+                    "url": public_url,
+                    "filename": filename
+                }
+        except:
+            pass  # File doesn't exist, proceed with upload
+            
+        # Download photo from Airtable with timeout
+        print(f"  Downloading photo for {airtable_id}...")
+        response = requests.get(photo_url, timeout=30)
+        response.raise_for_status()
+        
+        # Upload to Supabase Storage
+        file_data = response.content
+        content_type = photo.get("type", "image/jpeg")
+        
+        print(f"  Uploading photo for {airtable_id} to Supabase...")
+        upload_response = supabase.storage.from_("team-photos").upload(
+            path=storage_path,
+            file=file_data,
+            file_options={"content-type": content_type, "upsert": "true"}
+        )
+        
+        # Get the public URL
+        public_url = supabase.storage.from_("team-photos").get_public_url(storage_path)
+        print(f"  Successfully uploaded photo for {airtable_id}")
+        
+        return {
+            "url": public_url,
+            "filename": filename
+        }
+        
+    except requests.exceptions.Timeout:
+        print(f"  Warning: Timeout downloading photo for {airtable_id}")
+        return None
+    except Exception as e:
+        print(f"  Warning: Failed to upload photo for {airtable_id}: {str(e)}")
+        return None
+
 def map_team_member_record(
     airtable_record: Dict[str, Any], 
     department_mapping: Dict[str, str],
@@ -124,6 +195,10 @@ def map_team_member_record(
     position_uuids = [position_mapping.get(aid) for aid in position_airtable_ids if position_mapping.get(aid)]
     manager_uuids = [team_member_mapping.get(aid) for aid in manager_airtable_ids if team_member_mapping.get(aid)]
     
+    # Handle photo upload to Supabase Storage
+    photo_data = fields.get("Photo")
+    supabase_photo = upload_photo_to_supabase(photo_data, airtable_record["id"]) if photo_data else None
+    
     return {
         "airtable_id": airtable_record["id"],
         "full_name": fields.get("Full Name", ""),
@@ -132,7 +207,7 @@ def map_team_member_record(
         "manager": manager_uuids,  # Array of Supabase team_member UUIDs
         "position": position_uuids,  # Array of Supabase position UUIDs
         # Other fields
-        "photo": fields.get("Photo"),  # Photo attachment data
+        "photo": supabase_photo,  # Supabase Storage URL
         "status": fields.get("Status"),
         "company_email": fields.get("Company email"),
         "phone": fields.get("Phone"),
@@ -216,11 +291,12 @@ def sync_positions(modified_since: str = None) -> int:
     
     return 0
 
-def sync_team_members(modified_since: str = None) -> int:
+def sync_team_members(modified_since: str = None, skip_photos: bool = False) -> int:
     """Sync team member records from Airtable to Supabase.
     
     Args:
         modified_since: Optional ISO timestamp to filter modified records
+        skip_photos: If True, skip photo processing (useful for incremental syncs)
     """
     print("Syncing team members...")
     
@@ -244,10 +320,33 @@ def sync_team_members(modified_since: str = None) -> int:
     team_member_mapping = {tm["airtable_id"]: tm["id"] for tm in existing_tm_response.data}
     
     # Map records to Supabase format
-    supabase_records = [
-        map_team_member_record(record, department_mapping, position_mapping, team_member_mapping) 
-        for record in airtable_records
-    ]
+    print(f"  Processing {len(airtable_records)} team member records...")
+    if not skip_photos and len(airtable_records) > 0:
+        print(f"  Photo processing enabled - this may take several minutes...")
+    
+    supabase_records = []
+    for i, record in enumerate(airtable_records, 1):
+        if i % 10 == 0:
+            print(f"  Processing record {i}/{len(airtable_records)}...")
+        
+        # For incremental syncs, skip photo processing to speed things up
+        if skip_photos and modified_since:
+            # Temporarily remove photo data to skip processing
+            original_photo = record.get("fields", {}).get("Photo")
+            if "fields" in record:
+                record["fields"]["Photo"] = None
+            
+            mapped_record = map_team_member_record(record, department_mapping, position_mapping, team_member_mapping)
+            
+            # Restore original photo data (keep existing photo in DB)
+            if original_photo and "fields" in record:
+                record["fields"]["Photo"] = original_photo
+                # Don't update photo field for this record
+                del mapped_record["photo"]
+        else:
+            mapped_record = map_team_member_record(record, department_mapping, position_mapping, team_member_mapping)
+        
+        supabase_records.append(mapped_record)
     
     # Upsert to Supabase
     if supabase_records:
@@ -262,10 +361,20 @@ def sync_team_members(modified_since: str = None) -> int:
         
         # Second pass: update manager relationships now that all team members exist
         if updated_team_member_mapping != team_member_mapping:
-            updated_records = [
-                map_team_member_record(record, department_mapping, position_mapping, updated_team_member_mapping) 
-                for record in airtable_records
-            ]
+            updated_records = []
+            for record in airtable_records:
+                # Skip photo processing in second pass
+                if "fields" in record:
+                    original_photo = record["fields"].get("Photo")
+                    record["fields"]["Photo"] = None
+                
+                mapped_record = map_team_member_record(record, department_mapping, position_mapping, updated_team_member_mapping)
+                del mapped_record["photo"]  # Don't update photo in second pass
+                
+                if "fields" in record and original_photo:
+                    record["fields"]["Photo"] = original_photo
+                    
+                updated_records.append(mapped_record)
             
             supabase.table("team_members").upsert(
                 updated_records,
@@ -287,7 +396,7 @@ def update_last_sync_timestamp():
     
     print(f"Updated last sync timestamp: {timestamp}")
 
-async def run_sync(sync_mode: str = "incremental") -> Dict[str, int]:
+def run_sync(sync_mode: str = "incremental") -> Dict[str, int]:
     """Run the complete sync process in order: departments -> positions -> team_members.
     
     Args:
@@ -319,24 +428,24 @@ async def run_sync(sync_mode: str = "incremental") -> Dict[str, int]:
         # However, only team_members has Last Modified field for filtering
         
         if sync_mode == "full":
-            # Full sync - fetch all records
+            # Full sync - fetch all records and process photos
             dept_count = sync_departments()
             pos_count = sync_positions()
-            member_count = sync_team_members()
+            member_count = sync_team_members(skip_photos=False)  # Process photos in full sync
         else:
             # Incremental sync - still need to sync all tables for relationships
             # But only team_members will actually filter by modified date
             try:
                 dept_count = sync_departments()  # Always full for departments
                 pos_count = sync_positions()     # Always full for positions
-                member_count = sync_team_members(modified_since)  # Filtered for team_members
+                member_count = sync_team_members(modified_since, skip_photos=True)  # Skip photos for speed
             except Exception as e:
                 # If incremental sync fails, fall back to full sync
                 print(f"Incremental sync failed: {str(e)}")
                 print("Falling back to full sync...")
                 dept_count = sync_departments()
                 pos_count = sync_positions()
-                member_count = sync_team_members()
+                member_count = sync_team_members(skip_photos=False)  # Process photos in fallback
                 sync_mode = "full"  # Update mode to reflect what actually happened
         
         # Update sync timestamp only on successful sync
@@ -366,5 +475,4 @@ async def run_sync(sync_mode: str = "incremental") -> Dict[str, int]:
         raise e
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_sync())
+    run_sync()

@@ -9,7 +9,6 @@ Usage:
     python3 run_sync.py --mode incremental  # Explicit incremental
 """
 
-import asyncio
 import argparse
 from sync import run_sync
 
@@ -51,7 +50,7 @@ Examples:
     print("-" * 50)
     
     # Run the sync
-    result = asyncio.run(run_sync(sync_mode=sync_mode))
+    result = run_sync(sync_mode=sync_mode)
     
     # Print summary
     print("-" * 50)
